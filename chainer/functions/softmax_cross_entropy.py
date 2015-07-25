@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import numpy
 import six
 
@@ -35,6 +36,7 @@ class SoftmaxCrossEntropy(function.Function):
         y_type, = out_types
         type_check.expect(y_type.ndim == 0)  # means scalar
 
+    # ソフトマックス関数の出力値ykを用いて交差エントロピー関数に相当?
     def forward_cpu(self, inputs):
         x, t = inputs
         self.y, = softmax.Softmax().forward_cpu((x,))
