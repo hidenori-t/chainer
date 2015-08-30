@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 import heapq
 import weakref
 
@@ -7,6 +9,9 @@ from chainer import cuda
 
 
 class Variable(object):
+    """基本クラスの1つ.
+    このクラスに,データ,パラメータ,モデルの構造等を持たせて,誤差逆伝播を行う
+    """
 
     """Array with a structure to keep track of computation.
 

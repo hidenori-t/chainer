@@ -51,7 +51,7 @@ N_test = y_test.size
 
 # Prepare multi-layer perceptron model
 """
-ここからモデルの定義.Chainerのクラスや関数を使う
+ここからモデルの定義.Chainerのクラスや関数を使う.ポイントは入出力定義
 多層パーセプトロンモデルの設定
 l1からl3の3層のNNのモデルの構築法
 入力の手書き数字のデータがsize = 28の28*28=784次元ベクトルなので入力素子は784個
@@ -67,17 +67,22 @@ if args.gpu >= 0:
 
 # Neural net architecture
 """
-順伝播の構造が下記のforward()関数で定義される
+順伝播
+下記のforward()関数で定義される
 NNの構造,feedforwardの部分
 """
 
 def forward(x_data, y_data, train=True):
     """
+    ポイントはVariableクラス
+
     各関数等の説明
     Chainerの作法で,データは配列からChainerのVariableという型（クラス）のオブジェクトに変換して使う
     """
     x, t = chainer.Variable(x_data), chainer.Variable(y_data) # Variable で使う変数を変換している
     """
+    ポイントはrelu関数,dropout関数
+
     活性化関数はシグモイド関数ではなく、F.relu()関数が使われている.
     このF.relu()は正規化線形関数(Rectified Linear Unit function)で,f(x)=max(0,x).
     シンプルな関数のため,計算量が小さく学習スピードが速くなることが利点のよう
@@ -91,6 +96,8 @@ def forward(x_data, y_data, train=True):
     # 出力され,出力値がyとなる
     y = model.l3(h2)
     """
+    ポイントはsoftmax関数
+
     返り値は誤差と精度
     多クラス分類なので誤差関数としてソフトマックス関数と交差エントロピー関数を用い,誤差を導出
     F.accuracy()関数は出力と、教師データを照合して正答率(精度)を返しています。
@@ -101,8 +108,9 @@ def forward(x_data, y_data, train=True):
 
 # Setup optimizer
 """
-モデルが決まったので訓練に移る.
-ここでは最適化手法としてAdamが使われている.
+モデルが決まったので訓練に移る
+ここでは最適化手法としてAdamが使われている
+optimizerで勾配法を選択する
 """
 optimizer = optimizers.Adam()
 optimizer.setup(model.collect_parameters())
@@ -147,9 +155,11 @@ for epoch in six.moves.range(1, n_epoch + 1):
         sum_loss += float(cuda.to_cpu(loss.data)) * len(y_batch)
         sum_accuracy += float(cuda.to_cpu(acc.data)) * len(y_batch)
 
+    # 訓練データの誤差と,正解精度を表示
     print('train mean loss={}, accuracy={}'.format(
         sum_loss / N, sum_accuracy / N))
 
+    # code : 評価
     # evaluation
     # テストデータで誤差と、正解精度を算出し汎化性能を確認
     sum_accuracy = 0
