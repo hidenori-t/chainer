@@ -66,7 +66,6 @@ if args.gpu >= 0:
     cuda.get_device(args.gpu).use()
     model.to_gpu()
 
-<<<<<<< HEAD
 # Neural net architecture
 """
 順伝播
@@ -92,12 +91,12 @@ def forward(x_data, y_data, train=True):
     ランダムに中間層をドロップし,過学習を防ぐことができるらしい.
     dropoutやreluは層としてではなくforwardするときに処理を加えている
     """
-=======
+
 
 def forward(x_data, y_data, train=True):
     # Neural net architecture
     x, t = chainer.Variable(x_data), chainer.Variable(y_data)
->>>>>>> pfnet/master
+
     h1 = F.dropout(F.relu(model.l1(x)),  train=train)
     # 同じ構造がもう１層あり,
     h2 = F.dropout(F.relu(model.l2(h1)), train=train)
