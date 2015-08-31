@@ -57,7 +57,7 @@ def _get_type(name, index, array, accept_none):
         return Variable(TypeInfo((), None), var)
 
     assert(isinstance(array, numpy.ndarray) or
-           isinstance(array, cuda.GPUArray))
+           isinstance(array, cuda.ndarray))
     return Variable(TypeInfo(array.shape, array.dtype), var)
 
 
@@ -455,3 +455,5 @@ def expect(*bool_exprs):
     for expr in bool_exprs:
         assert isinstance(expr, Testable)
         expr.expect()
+
+prod = Variable(numpy.prod, 'prod')

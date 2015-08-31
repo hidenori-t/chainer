@@ -24,6 +24,7 @@ parser = argparse.ArgumentParser(description='Chainer example: MNIST')
 parser.add_argument('--gpu', '-g', default=-1, type=int,
                     help='GPU ID (negative value indicates CPU)')
 args = parser.parse_args()
+xp = cuda.cupy if args.gpu >= 0 else np
 
 # 各種パラメータの定義・設定
 batchsize = 100 # 確率的勾配降下法で学習させる際の1回分のbatchsize
@@ -62,9 +63,10 @@ model = chainer.FunctionSet(l1=F.Linear(784, n_units), # 入力 size = 28の28*2
                             l2=F.Linear(n_units, n_units), # 中間層  n_units = 1000 次元ベクトル
                             l3=F.Linear(n_units, 10)) # 出力層 10次元ベクトル
 if args.gpu >= 0:
-    cuda.init(args.gpu)
+    cuda.get_device(args.gpu).use()
     model.to_gpu()
 
+<<<<<<< HEAD
 # Neural net architecture
 """
 順伝播
@@ -90,6 +92,12 @@ def forward(x_data, y_data, train=True):
     ランダムに中間層をドロップし,過学習を防ぐことができるらしい.
     dropoutやreluは層としてではなくforwardするときに処理を加えている
     """
+=======
+
+def forward(x_data, y_data, train=True):
+    # Neural net architecture
+    x, t = chainer.Variable(x_data), chainer.Variable(y_data)
+>>>>>>> pfnet/master
     h1 = F.dropout(F.relu(model.l1(x)),  train=train)
     # 同じ構造がもう１層あり,
     h2 = F.dropout(F.relu(model.l2(h1)), train=train)
@@ -106,6 +114,7 @@ def forward(x_data, y_data, train=True):
     """
     return F.softmax_cross_entropy(y, t), F.accuracy(y, t)
 
+
 # Setup optimizer
 """
 モデルが決まったので訓練に移る
@@ -113,7 +122,7 @@ def forward(x_data, y_data, train=True):
 optimizerで勾配法を選択する
 """
 optimizer = optimizers.Adam()
-optimizer.setup(model.collect_parameters())
+optimizer.setup(model)
 
 # 以上の準備から、ミニバッチ学習で手書き数字の判別を実施し、その精度を見ていく
 # Learning loop
@@ -128,11 +137,8 @@ for epoch in six.moves.range(1, n_epoch + 1):
     sum_loss = 0
     # 0〜Nまでのデータをバッチサイズごとに使って学習
     for i in six.moves.range(0, N, batchsize):
-        x_batch = x_train[perm[i:i + batchsize]]
-        y_batch = y_train[perm[i:i + batchsize]]
-        if args.gpu >= 0:
-            x_batch = cuda.to_gpu(x_batch)
-            y_batch = cuda.to_gpu(y_batch)
+        x_batch = xp.asarray(x_train[perm[i:i + batchsize]])
+        y_batch = xp.asarray(y_train[perm[i:i + batchsize]])
 
         # 勾配を初期化
         optimizer.zero_grads()
@@ -152,8 +158,8 @@ for epoch in six.moves.range(1, n_epoch + 1):
                 o.write(g.dump())
             print('graph generated')
 
-        sum_loss += float(cuda.to_cpu(loss.data)) * len(y_batch)
-        sum_accuracy += float(cuda.to_cpu(acc.data)) * len(y_batch)
+        sum_loss += float(loss.data) * len(y_batch)
+        sum_accuracy += float(acc.data) * len(y_batch)
 
     # 訓練データの誤差と,正解精度を表示
     print('train mean loss={}, accuracy={}'.format(
@@ -165,17 +171,14 @@ for epoch in six.moves.range(1, n_epoch + 1):
     sum_accuracy = 0
     sum_loss = 0
     for i in six.moves.range(0, N_test, batchsize):
-        x_batch = x_test[i:i + batchsize]
-        y_batch = y_test[i:i + batchsize]
-        if args.gpu >= 0:
-            x_batch = cuda.to_gpu(x_batch)
-            y_batch = cuda.to_gpu(y_batch)
+        x_batch = xp.asarray(x_test[i:i + batchsize])
+        y_batch = xp.asarray(y_test[i:i + batchsize])
 
         # 順伝播させて誤差と精度を算出
         loss, acc = forward(x_batch, y_batch, train=False)
 
-        sum_loss += float(cuda.to_cpu(loss.data)) * len(y_batch)
-        sum_accuracy += float(cuda.to_cpu(acc.data)) * len(y_batch)
+        sum_loss += float(loss.data) * len(y_batch)
+        sum_accuracy += float(acc.data) * len(y_batch)
 
     # テストデータでの誤差と、正解精度を表示
     print('test  mean loss={}, accuracy={}'.format(

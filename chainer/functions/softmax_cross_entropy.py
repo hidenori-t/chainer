@@ -12,8 +12,9 @@ class SoftmaxCrossEntropy(function.Function):
 
     """Softmax activation followed by a cross entropy loss."""
 
-    def __init__(self, use_cudnn=True):
+    def __init__(self, use_cudnn=True, normalize=True):
         self.use_cudnn = use_cudnn
+        self.normalize = normalize
 
     def check_type_forward(self, in_types):
         type_check.expect(in_types.size() == 2)
@@ -21,13 +22,14 @@ class SoftmaxCrossEntropy(function.Function):
 
         type_check.expect(
             x_type.dtype == numpy.float32,
-            x_type.ndim == 2,
             t_type.dtype == numpy.int32,
-            t_type.ndim == 1,
+            t_type.ndim == x_type.ndim - 1,
 
             x_type.shape[0] == t_type.shape[0],
+            x_type.shape[2:] == t_type.shape[1:],
         )
 
+<<<<<<< HEAD
     def check_type_backward(self, in_types, out_types):
         type_check.expect(
             in_types.size() == 2,
@@ -37,52 +39,103 @@ class SoftmaxCrossEntropy(function.Function):
         type_check.expect(y_type.ndim == 0)  # means scalar
 
     # ソフトマックス関数の出力値ykを用いて交差エントロピー関数に相当?
+=======
+>>>>>>> pfnet/master
     def forward_cpu(self, inputs):
         x, t = inputs
-        self.y, = softmax.Softmax().forward_cpu((x,))
-        p = self.y[six.moves.range(len(t)), t]
-        y = -numpy.log(p).sum(keepdims=True) / t.size
+        self.y, = softmax.Softmax().forward((x,))
+        yd = numpy.rollaxis(self.y, 1)
+        yd = yd.reshape(len(yd), -1).T
+
+        p = yd[six.moves.range(t.size), t.flat]
+        # deal with the case where the SoftmaxCrossEntropy is
+        # unpickled from the old version
+        if getattr(self, 'normalize', True):
+            n_unit = int(numpy.prod(self.y.shape[2:]))
+            count = t.shape[0] * n_unit
+        else:
+            count = t.shape[0]
+        y = numpy.log(p).sum(keepdims=True) * (-1.0 / count)
         return y.reshape(()),
 
     def forward_gpu(self, inputs):
+        cupy = cuda.cupy
         x, t = inputs
-        self.y, = softmax.Softmax(self.use_cudnn).forward_gpu((x,))
+        self.y, = softmax.Softmax(self.use_cudnn).forward((x,))
+        n_unit = int(numpy.prod(self.y.shape[2:]))
+        if getattr(self, 'normalize', True):
+            count = t.shape[0] * n_unit
+        else:
+            count = t.shape[0]
+        y = cupy.rollaxis(self.y, 1, len(self.y))
         ret = cuda.reduce(
-            'int* t, float* y, int n_channel', '-log(y[i * n_channel + t[i]])',
-            'a+b', '0', 'crossent_fwd', numpy.float32
-        )(t, self.y, self.y.shape[1])
-        ret /= t.size
+            'S t, raw T y, int32 n_channel, T inv_count', 'T out',
+            'log(y[_j * n_channel + t])',
+            'a + b', 'out = a * inv_count', '0', 'crossent_fwd'
+        )(t, y, y.shape[-1], -1.0 / count)
         return ret,
 
     def backward_cpu(self, inputs, grad_outputs):
         t, gloss = inputs[1], grad_outputs[0]
-        gx = self.y.copy()
-        gx[six.moves.range(len(t)), t] -= 1
-        gx *= gloss / t.size
+        n_unit = int(numpy.prod(self.y.shape[2:]))
+        if self.y.ndim == 2:
+            gx = self.y.copy()
+            gx[six.moves.xrange(len(t)), t] -= 1
+        else:
+            # in the case where y.ndim is higher than 2,
+            # we think that a current implementation is inefficient
+            # because it yields two provisional arrays for indexing.
+            gx = self.y.copy().reshape(self.y.shape[0], self.y.shape[1], -1)
+            fst_index = numpy.arange(t.size) // n_unit
+            trd_index = numpy.arange(t.size) % n_unit
+            gx[fst_index, t.flat, trd_index] -= 1
+            gx = gx.reshape(self.y.shape)
+
+        if getattr(self, 'normalize', True):
+            count = t.shape[0] * n_unit
+        else:
+            count = t.shape[0]
+        gx *= gloss / count
         return gx, None
 
     def backward_gpu(self, inputs, grad_outputs):
         t, gloss = inputs[1], grad_outputs[0]
-        gx = cuda.empty_like(self.y)
-        coeff = gloss / t.size
-        cuda.elementwise(
+        n_unit = numpy.prod(self.y.shape[2:], dtype=int)
+        if getattr(self, 'normalize', True):
+            count = t.shape[0] * n_unit
+        else:
+            count = t.shape[0]
+        coeff = cuda.cupy.divide(gloss, count, dtype=gloss.dtype)
+        gx = cuda.elementwise(
+            'T y, raw S t, raw T coeff, S n_channel, S n_unit',
+            'T gx',
             '''
-               float* gx, const float* y, const int* t, const float* coeff,
-               int n_channel
+               const int n = i / (n_channel * n_unit);
+               const int c = (i % (n_channel * n_unit)) / n_unit;
+               const int m = i % n_unit;
+               gx = coeff[0] * (y - (c == t[n * n_unit + m]));
             ''',
-            'gx[i] = *coeff * (y[i] - ((i % n_channel) == t[i / n_channel]))',
-            'softmax_crossent_bwd')(gx, self.y, t, coeff, self.y.shape[1])
+            'softmax_crossent_bwd')(
+                self.y, t, coeff, self.y.shape[1], n_unit)
         return gx, None
 
 
-def softmax_cross_entropy(x, t, use_cudnn=True):
+def softmax_cross_entropy(x, t, use_cudnn=True, normalize=True):
     """Computes cross entropy loss for pre-softmax activations.
 
     Args:
-        x (Variable): Variable holding a matrix whose (i, j)-th element
-            indicates unnormalized log probability of the class j at the i-th
-            example.
+        x (Variable): Variable holding a multidimensional array whose element
+            indicates unnormalized log probability: the first axis of the
+            variable represents the number of samples, and the second axis
+            represents the number of classes. While this function computes
+            a usual softmax cross entropy if the number of dimensions is equal
+            to 2, it computes a cross entropy of the replicated softmax if the
+            number of dimensions is greater than 2.
         t (Variable): Variable holding an int32 vector of groundtruth labels.
+        normalize (Variable): Variable holding a boolean value which
+            determines the normalization constant. If true, this function
+            normalizes the cross entropy loss across all instances. If else,
+            it only normalizes along a batch size.
 
     Returns:
         Variable: A variable holding a scalar array of the cross entropy loss.
@@ -92,4 +145,4 @@ def softmax_cross_entropy(x, t, use_cudnn=True):
        This function is differentiable only by ``x``.
 
     """
-    return SoftmaxCrossEntropy(use_cudnn)(x, t)
+    return SoftmaxCrossEntropy(use_cudnn, normalize)(x, t)
