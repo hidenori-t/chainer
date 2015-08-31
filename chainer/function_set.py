@@ -1,5 +1,6 @@
 import numpy
 import six
+import warnings
 
 from chainer import cuda
 
@@ -39,7 +40,28 @@ class FunctionSet(object):
             parameter arrays, and the second is a tuple of gradient arrays.
 
         """
-        return self.parameters, self.gradients
+
+        msg = ("'collect_parameters' is deprecated. "
+               "You can pass FunctionSet itself to 'optimizer.setup'")
+        warnings.warn(msg, FutureWarning)
+        return self
+
+    def __getitem__(self, key):
+        """Returns the :class:`Function` objects by name.
+
+        Args:
+            key (str): Name of the function.
+
+        Returns:
+            ~chainer.Function: Function object.
+
+        .. admonition:: Example
+
+           >>> model = FunctionSet(l1=F.Linear(10, 10), l2=F.Linear(10, 10))
+           >>> l1 = model['l1']
+        """
+
+        return getattr(self, key)
 
     def to_gpu(self, device=None):
         """Migrates all parameters and gradients onto GPU.
@@ -47,7 +69,7 @@ class FunctionSet(object):
         This method calls ``to_gpu`` method of each registered object.
 
         Args:
-            device (int or :class:`pycuda.driver.Device` or ``None``): Device
+            device (int or :class:`cupy.cuda.Device` or ``None``): Device
                 ID of GPU. If ``None`` is given, it uses the current device.
 
         Returns:
@@ -81,9 +103,9 @@ class FunctionSet(object):
         for dst, src in zip(self.parameters, params):
             if isinstance(dst, numpy.ndarray):
                 if isinstance(src, numpy.ndarray):
-                    dst.copy(src)
+                    numpy.copyto(dst, src)
                 else:
-                    src.get(dst)
+                    dst[:] = src.get()
             elif isinstance(src, numpy.ndarray):
                 dst.set(src)
             else:

@@ -1,15 +1,18 @@
 import collections
+import ctypes
 
 import numpy
+import six
 
 from chainer import cuda
-from chainer import cudnn
 from chainer import function
+from chainer.functions import concat
 from chainer.utils import conv
 from chainer.utils import type_check
 
-if cudnn.available:
-    from chainer.cudnn import libcudnn
+if cuda.cudnn_enabled:
+    cudnn = cuda.cudnn
+    libcudnn = cudnn.cudnn
 
 
 def _pair(x):
@@ -50,32 +53,34 @@ class Pooling2D(function.Function):
             w, self.kw, self.sx, self.pw, self.cover_all)
         y = cuda.empty((n, c, y_h, y_w), dtype=numpy.float32)
 
-        handle = cudnn.get_default_handle()
+        handle = cudnn.get_handle()
         pool_desc = self.create_pool_desc()
-        x_desc = cudnn.get_tensor_desc(x[0], x[0].shape[2], x[0].shape[3])
-        y_desc = cudnn.get_tensor_desc(y, y_h, y_w)
+        x_desc = cudnn.create_tensor_descriptor(x[0])
+        y_desc = cudnn.create_tensor_descriptor(y)
 
-        libcudnn.cudnnPoolingForward(
-            handle, pool_desc.value, 1, x_desc.value, cudnn.get_ptr(x[0]),
-            0, y_desc.value, cudnn.get_ptr(y))
+        libcudnn.poolingForward(
+            handle, pool_desc.value, ctypes.c_float(1), x_desc.value,
+            x[0].data.ptr, ctypes.c_float(0), y_desc.value, y.data.ptr)
         self.y = y
 
         return y,
 
     def backward_gpu(self, x, gy):
         # Implementation using cudnn
-        handle = cudnn.get_default_handle()
+        handle = cudnn.get_handle()
         pool_desc = self.create_pool_desc()
 
-        x_desc = cudnn.get_tensor_desc(x[0],  x[0].shape[2],  x[0].shape[3])
-        y_desc = cudnn.get_tensor_desc(gy[0], gy[0].shape[2], gy[0].shape[3])
+        # Pooling of cuDNNv2 does not seem to support non-contiguous gradients
+        gy = cuda.cupy.ascontiguousarray(gy[0])
+
+        x_desc = cudnn.create_tensor_descriptor(x[0])
+        y_desc = cudnn.create_tensor_descriptor(gy)
 
         gx = cuda.empty_like(x[0])
-        libcudnn.cudnnPoolingBackward(
-            handle, pool_desc.value, 1, y_desc.value, cudnn.get_ptr(self.y),
-            y_desc.value, cudnn.get_ptr(
-                gy[0]), x_desc.value, cudnn.get_ptr(x[0]),
-            0, x_desc.value, cudnn.get_ptr(gx))
+        libcudnn.poolingBackward(
+            handle, pool_desc.value, ctypes.c_float(1), y_desc.value,
+            self.y.data.ptr, y_desc.value, gy.data.ptr, x_desc.value,
+            x[0].data.ptr, ctypes.c_float(0), x_desc.value, gx.data.ptr)
         return gx,
 
     def create_pool_desc(self):
@@ -100,7 +105,7 @@ class MaxPooling2D(Pooling2D):
         return y,
 
     def forward_gpu(self, x):
-        if cudnn.enabled and self.use_cudnn:
+        if cuda.cudnn_enabled and self.use_cudnn:
             return super(MaxPooling2D, self).forward_gpu(x)
 
         n, c, h, w = x[0].shape
@@ -108,15 +113,14 @@ class MaxPooling2D(Pooling2D):
             h, self.kh, self.sy, self.ph, self.cover_all)
         y_w = conv.get_conv_outsize(
             w, self.kw, self.sx, self.pw, self.cover_all)
-        y = cuda.empty((n, c, y_h, y_w), dtype=numpy.float32)
+        y = cuda.empty((n, c, y_h, y_w), dtype=x[0].dtype)
         self.indexes = cuda.empty((n, c, y_h, y_w), dtype=numpy.int32)
 
         cuda.elementwise(
+            'raw T in, int32 h, int32 w, int32 out_h, int32 out_w,'
+            'int32 kh, int32 kw, int32 sy, int32 sx, int32 ph, int32 pw',
+            'T out, S indexes',
             '''
-               float* out, int* indexes, const float* in,
-               int h, int w, int out_h, int out_w,
-               int kh, int kw, int sy, int sx, int ph, int pw
-            ''', '''
                int c0    = i / (out_h * out_w);
                int out_y = i / out_w % out_h;
                int out_x = i % out_w;
@@ -139,14 +143,15 @@ class MaxPooling2D(Pooling2D):
                    }
                  }
                }
-               out[i] = maxval;
+               out = maxval;
 
                int argmax_ky = argmax_y + ph - out_y * sy;
                int argmax_kx = argmax_x + pw - out_x * sx;
-               indexes[i] = argmax_kx + kw * argmax_ky;
-            ''', 'max_pool_fwd')(y, self.indexes, x[0], h, w, y_h, y_w,
-                                 self.kh, self.kw, self.sy, self.sx, self.ph,
-                                 self.pw)
+               indexes = argmax_kx + kw * argmax_ky;
+            ''', 'max_pool_fwd')(x[0],
+                                 h, w, y_h, y_w, self.kh, self.kw,
+                                 self.sy, self.sx, self.ph, self.pw,
+                                 y, self.indexes)
         return y,
 
     def backward_cpu(self, x, gy):
@@ -164,7 +169,7 @@ class MaxPooling2D(Pooling2D):
         return gx,
 
     def backward_gpu(self, x, gy):
-        if cudnn.enabled and self.use_cudnn:
+        if cuda.cudnn_enabled and self.use_cudnn:
             return super(MaxPooling2D, self).backward_gpu(x, gy)
 
         n, c, h, w = x[0].shape
@@ -172,11 +177,11 @@ class MaxPooling2D(Pooling2D):
         gx = cuda.empty_like(x[0])
 
         cuda.elementwise(
+            'raw T gy, raw S indexes, int32 h, int32 w,'
+            'int32 out_h, int32 out_w, int32 kh, int32 kw,'
+            'int32 sy, int32 sx, int32 ph, int32 pw',
+            'T gx',
             '''
-               float* gx, const int* indexes, const float* gy,
-               int h, int w, int out_h, int out_w,
-               int kh, int kw, int sy, int sx, int ph, int pw
-            ''', '''
                int c0 = i / (h * w);
                int y  = i / w % h + ph;
                int x  = i % w + pw;
@@ -196,16 +201,18 @@ class MaxPooling2D(Pooling2D):
                    }
                  }
                }
-               gx[i] = val;
+               gx = val;
             ''',
-            'max_pool_bwd')(gx, self.indexes, gy[0], h, w, y_h, y_w, self.kh,
-                            self.kw, self.sy, self.sx, self.ph, self.pw)
+            'max_pool_bwd')(gy[0], self.indexes,
+                            h, w, y_h, y_w, self.kh, self.kw,
+                            self.sy, self.sx, self.ph, self.pw,
+                            gx)
         return gx,
 
     def create_pool_desc(self):
-        return cudnn.get_pool2d_desc(
+        return cudnn.create_pooling_descriptor(
             (self.kh, self.kw), (self.sy, self.sx), (self.ph, self.pw),
-            'CUDNN_POOLING_MAX')
+            libcudnn.CUDNN_POOLING_MAX)
 
 
 def max_pooling_2d(x, ksize, stride=None, pad=0, cover_all=True,
@@ -221,7 +228,7 @@ def max_pooling_2d(x, ksize, stride=None, pad=0, cover_all=True,
         ksize (int or (int, int)): Size of pooling window. ``ksize=k`` and
             ``ksize=(k, k)`` are equivalent.
         stride (int or (int, int) or None): Stride of pooling applications.
-            ``ksize=k`` and ``ksize=(k, k)`` are equivalent. If None is
+            ``stride=s`` and ``stride=(s, s)`` are equivalent. If None is
             specified, then it uses same stride as the pooling window size.
         pad (int or (int, int)): Spatial padding width for the input array.
             ``pad=p`` and ``pad=(p, p)`` are equivalent.
@@ -249,7 +256,7 @@ class AveragePooling2D(Pooling2D):
         return y,
 
     def forward_gpu(self, x):
-        if cudnn.enabled and self.use_cudnn:
+        if cuda.cudnn_enabled and self.use_cudnn:
             return super(AveragePooling2D, self).forward_gpu(x)
 
         n, c, h, w = x[0].shape
@@ -257,12 +264,12 @@ class AveragePooling2D(Pooling2D):
         y_w = conv.get_conv_outsize(w, self.kw, self.sx, self.pw)
         y = cuda.empty((n, c, y_h, y_w), dtype=numpy.float32)
         coeff = 1. / (self.kh * self.kw)
-
         cuda.elementwise(
+            'raw T in, int32 h, int32 w,'
+            'int32 out_h, int32 out_w, int32 kh, int32 kw,'
+            'int32 sy, int32 sx, int32 ph, int32 pw, T coeff',
+            'T out',
             '''
-               float* out, const float* in, int h, int w, int out_h, int out_w,
-               int kh, int kw, int sy, int sx, int ph, int pw, float coeff
-            ''', '''
                int c0    = i / (out_h * out_w);
                int out_y = i / out_w % out_h;
                int out_x = i % out_w;
@@ -278,9 +285,10 @@ class AveragePooling2D(Pooling2D):
                    val += in[x + offset_y];
                  }
                }
-               out[i] = val * coeff;
-            ''', 'avg_pool_fwd')(y, x[0], h, w, y_h, y_w, self.kh, self.kw,
-                                 self.sy, self.sx, self.ph, self.pw, coeff)
+               out = val * coeff;
+            ''', 'avg_pool_fwd')(x[0], h, w, y_h, y_w, self.kh, self.kw,
+                                 self.sy, self.sx, self.ph, self.pw, coeff,
+                                 y)
         return y,
 
     def backward_cpu(self, x, gy):
@@ -292,19 +300,19 @@ class AveragePooling2D(Pooling2D):
         return gx,
 
     def backward_gpu(self, x, gy):
-        if cudnn.enabled and self.use_cudnn:
+        if cuda.cudnn_enabled and self.use_cudnn:
             return super(AveragePooling2D, self).backward_gpu(x, gy)
 
         n, c, h, w = x[0].shape
         y_h, y_w = gy[0].shape[2:]
         gx = cuda.empty_like(x[0])
         coeff = 1. / (self.kh * self.kw)
-
         cuda.elementwise(
+            'raw T gy, int32 h, int32 w,'
+            'int32 out_h, int32 out_w, int32 kh, int32 kw,'
+            'int32 sy, int32 sx, int32 ph, int32 pw, T coeff',
+            'T gx',
             '''
-               float* gx, const float* gy, int h, int w, int out_h, int out_w,
-               int kh, int kw, int sy, int sx, int ph, int pw, float coeff
-            ''', '''
                int c0 = i / (h * w);
                int y  = i / w % h + ph;
                int x  = i % w + pw;
@@ -320,15 +328,16 @@ class AveragePooling2D(Pooling2D):
                    val += gy[out_x + out_w * (out_y + hc0)];
                  }
                }
-               gx[i] = val * coeff;
-            ''', 'avg_pool_bwd')(gx, gy[0], h, w, y_h, y_w, self.kh, self.kw,
-                                 self.sy, self.sx, self.ph, self.pw, coeff)
+               gx = val * coeff;
+            ''', 'avg_pool_bwd')(gy[0], h, w, y_h, y_w, self.kh, self.kw,
+                                 self.sy, self.sx, self.ph, self.pw, coeff,
+                                 gx)
         return gx,
 
     def create_pool_desc(self):
-        return cudnn.get_pool2d_desc(
+        return cudnn.create_pooling_descriptor(
             (self.kh, self.kw), (self.sy, self.sx), (self.ph, self.pw),
-            'CUDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING')
+            libcudnn.CUDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING)
 
 
 def average_pooling_2d(x, ksize, stride=None, pad=0, use_cudnn=True):
@@ -343,7 +352,7 @@ def average_pooling_2d(x, ksize, stride=None, pad=0, use_cudnn=True):
         ksize (int or (int, int)): Size of pooling window. ``ksize=k`` and
             ``ksize=(k, k)`` are equivalent.
         stride (int or (int, int) or None): Stride of pooling applications.
-            ``ksize=k`` and ``ksize=(k, k)`` are equivalent. If None is
+            ``stride=s`` and ``stride=(s, s)`` are equivalent. If None is
             specified, then it uses same stride as the pooling window size.
         pad (int or (int, int)): Spatial padding width for the input array.
             ``pad=p`` and ``pad=(p, p)`` are equivalent.
@@ -360,3 +369,117 @@ def average_pooling_2d(x, ksize, stride=None, pad=0, use_cudnn=True):
 
     """
     return AveragePooling2D(ksize, stride, pad, False, use_cudnn)(x)
+
+
+class SpatialPyramidPooling2D(function.Function):
+
+    """Spatial pyramid pooling over a set of 2d planes."""
+
+    def __init__(self, x_shape, pyramid_height, pooling_class, use_cudnn=True):
+        bottom_c, bottom_h, bottom_w = x_shape
+        self.pyramid_height = pyramid_height
+
+        # create pooling functions for different pyramid levels
+        out_dim = 0
+        self.split_inds = []
+        self.poolers = []
+        for pyramid_level in six.moves.range(pyramid_height):
+            num_bins = int(2 ** pyramid_level)
+
+            ksize_h = int(numpy.ceil(bottom_h / (float(num_bins))))
+            remainder_h = ksize_h * num_bins - bottom_h
+            pad_h = remainder_h // 2
+
+            ksize_w = int(numpy.ceil(bottom_w / (float(num_bins))))
+            remainder_w = ksize_w * num_bins - bottom_w
+            pad_w = remainder_w // 2
+
+            ksize = (ksize_h, ksize_w)
+            pad = (pad_h, pad_w)
+
+            if pooling_class == MaxPooling2D:
+                pooler = pooling_class(ksize=ksize, stride=None, pad=pad,
+                                       cover_all=True, use_cudnn=use_cudnn)
+                self.poolers.append(pooler)
+            else:
+                raise NotImplementedError()
+
+            out_dim += bottom_c * (num_bins ** 2)
+            if pyramid_level < pyramid_height - 1:
+                self.split_inds.append(out_dim)
+
+    def forward(self, x):
+        self.ys = []
+        for pooler in self.poolers:
+            y = pooler.forward(x)[0]
+            n, c, h, w = pooler.out_shape = y.shape
+            self.ys.append(y.reshape((n, c * h * w, 1, 1)))
+
+        return concat.Concat(axis=1).forward(self.ys)
+
+    def backward(self, x, gy):
+        xp = cuda.get_array_module(*x)
+        gx = xp.zeros_like(x[0])
+        gys = xp.split(gy[0], self.split_inds, axis=1)
+        for pooler, gy in zip(self.poolers, gys):
+            gy = gy.reshape(pooler.out_shape)
+            gx += pooler.backward(x, (gy,))[0]
+
+        return gx,
+
+
+def spatial_pyramid_pooling_2d(x, pyramid_height, pooling_class,
+                               use_cudnn=True):
+    """Spatial pyramid pooling function.
+
+    It outputs a fixed-length vector regardless of input feature map size.
+
+    It performs pooling operation to the input 4D-array ``x`` with different
+    kernel sizes and padding sizes, and then flattens all dimensions except
+    first dimension of all pooling results, and finally concatenates them along
+    2nd dimension.
+
+    At :math:`i`-th pyramid level, the kernel size
+    :math:`(k_h^{(i)}, k_w^{(i)})` and padding size
+    :math:`(p_h^{(i)}, p_w^{(i)})` of pooling operation are calculated as
+    below:
+
+    .. math::
+        k_h^{(i)} &= \\lceil b_h / 2^i \\rceil, \\\\
+        k_w^{(i)} &= \\lceil b_w / 2^i \\rceil, \\\\
+        p_h^{(i)} &= (2^i k_h^{(i)} - b_h) / 2, \\\\
+        p_w^{(i)} &= (2^i k_w^{(i)} - b_w) / 2,
+
+    where :math:`\\lceil \\cdot \\rceil` denotes the ceiling function, and
+    :math:`b_h, b_w` are height and width of input variable ``x``,
+    respectively. Note that index of pyramid level :math:`i` is zero-based.
+
+    See detail in paper: `Spatial Pyramid Pooling in Deep Convolutional \
+    Networks for Visual Recognition \
+    <http://arxiv.org/abs/1406.4729>`_.
+
+    Args:
+        x (~chainer.Variable): Input variable. The shape of ``x`` should be
+            (batchsize, # of channels, height, width).
+        pyramid_height (int): the number of pyramid levels
+        pooling_class (MaxPooling2D or AveragePooling2D):
+            Only MaxPooling2D class can be available for now.
+        use_cudnn (bool): If True and CuDNN is enabled, then this function
+            uses CuDNN as the core implementation.
+
+    Returns:
+        ~chainer.Variable: Ouptut variable. The shape of the output variable
+            will be (batchsize, :math:`c \\sum_{h=0}^{H-1} 2^{2h}`, 1, 1),
+            where :math:`c` is the number of channels of input variable ``x``
+            and :math:`H` is the number of pyramid levels.
+
+    .. note::
+
+        This function uses some pooling classes as components to perform
+        spatial pyramid pooling. Now it supports only
+        :class:`~functions.MaxPooling2D` as elemental pooling operator so far.
+
+    """
+
+    return SpatialPyramidPooling2D(x.data.shape[1:], pyramid_height,
+                                   pooling_class, use_cudnn=use_cudnn)(x)
