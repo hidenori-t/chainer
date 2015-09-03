@@ -1,9 +1,10 @@
+import ctypes
+
 import numpy
 
 import cupy
 from cupy import cuda
 from cupy import elementwise
-from cupy import internal
 
 
 def array(obj, dtype=None, copy=True, ndmin=0):
@@ -42,7 +43,7 @@ def array(obj, dtype=None, copy=True, ndmin=0):
         if a_cpu.ndim > 0:
             a_cpu = numpy.ascontiguousarray(a_cpu)
         a = cupy.ndarray(a_cpu.shape, dtype=a_cpu.dtype)
-        a.data.copy_from_host(internal.get_ndarray_ptr(a_cpu), a.nbytes)
+        a.data.copy_from_host(a_cpu.ctypes.data_as(ctypes.c_void_p), a.nbytes)
         if a_cpu.dtype == a.dtype:
             return a
         else:
@@ -110,9 +111,7 @@ def ascontiguousarray(a, dtype=None):
         return newarray
 
 
-def asmatrix(data, dtype=None):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement asmatrix
 
 
 def copy(a):
@@ -154,32 +153,19 @@ def copy(a):
     return newarray
 
 
-def frombuffer(buffer, dtype=float, count=-1, offset=0):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement frombuffer
 
 
-def fromfile(file, dtype=float, count=-1, sep=''):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement fromfile
 
 
-def fromfunction(function, shape, **kwargs):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement fromfunction
 
 
-def fromiter(iterable, dtype, count=-1):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement fromiter
 
 
-def fromstring(string, dtype=float, count=-1, sep=''):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement fromstring
 
 
-def loadtxt(fname, dtype=numpy.float64, comments='#', delimiter=None,
-            converters=None, skiprows=0, usecols=None, unpack=False, ndmin=0):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement loadtxt

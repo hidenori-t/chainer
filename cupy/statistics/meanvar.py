@@ -5,14 +5,10 @@ from cupy import math
 from cupy import reduction
 
 
-def median(a, axis=None, out=None, overwrite_input=False, keepdims=False):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement median
 
 
-def average(a, axis=None, weights=None, returned=False):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement average
 
 
 def mean(a, axis=None, dtype=None, out=None, keepdims=False):
@@ -91,19 +87,13 @@ def std(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
     return math.misc.sqrt_fixed(ret, dtype=dtype, out=out)
 
 
-def nanmean(a, axis=None, dtype=None, out=None, keepdims=False):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement nanmean
 
 
-def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement nanstd
 
 
-def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement nanvar
 
 
 def _count_reduce_items(arr, axis):
@@ -116,8 +106,8 @@ def _count_reduce_items(arr, axis):
 # TODO(okuta) needs cast
 _mean = reduction.create_reduction_func(
     'cupy_mean',
-    ['?->d', 'B->d', 'h->d', 'H->d', 'i->d', 'I->d', 'l->d', 'L->d',
+    ('?->d', 'B->d', 'h->d', 'H->d', 'i->d', 'I->d', 'l->d', 'L->d',
      'q->d', 'Q->d',
      ('e->e', (None, None, None, 'float')),
-     'f->f', 'd->d'],
+     'f->f', 'd->d'),
     ('in0', 'a + b', 'out0 = a / (_in_ind.size() / _out_ind.size())', None))

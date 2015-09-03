@@ -3,7 +3,7 @@ from cupy import elementwise
 
 def _create_float_test_ufunc(name, doc):
     return elementwise.create_ufunc(
-        'cupy_' + name, ['e->?', 'f->?', 'd->?'], 'out0 = %s(in0)' % name,
+        'cupy_' + name, ('e->?', 'f->?', 'd->?'), 'out0 = %s(in0)' % name,
         doc=doc)
 
 
@@ -37,11 +37,7 @@ isnan = _create_float_test_ufunc(
     ''')
 
 
-def isneginf(x, y=None):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement isneginf
 
 
-def isposinf(x, y=None):
-    # TODO(beam2d): Implement it
-    raise NotImplementedError
+# TODO(okuta): Implement isposinf

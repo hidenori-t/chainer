@@ -35,6 +35,8 @@ parser.add_argument('--out-type', '-o', choices=['hsm', 'ns', 'original'],
                     help='output model type ("hsm": hierarchical softmax, '
                     '"ns": negative sampling, "original": no approximation)')
 args = parser.parse_args()
+if args.gpu >= 0:
+    cuda.check_cuda_available()
 xp = cuda.cupy if args.gpu >= 0 else np
 
 print('GPU: {}'.format(args.gpu))
@@ -121,8 +123,9 @@ model = chainer.FunctionSet(
 )
 
 if args.out_type == 'hsm':
-    tree = F.create_huffman_tree(counts)
-    model.l = F.BinaryHierarchicalSoftmax(args.unit, tree)
+    HSM = F.BinaryHierarchicalSoftmax
+    tree = HSM.create_huffman_tree(counts)
+    model.l = HSM(args.unit, tree)
     loss_func = model.l
 elif args.out_type == 'ns':
     cs = [counts[w] for w in range(len(counts))]

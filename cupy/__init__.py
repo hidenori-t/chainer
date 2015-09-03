@@ -87,25 +87,28 @@ class ndarray(object):
 
     """
     def __init__(self, shape, dtype=float, memptr=None, strides=None):
-        self._shape = tuple(shape)
-        self._dtype = numpy.dtype(dtype)
+        self._shape = shape = tuple(shape)
+        self._dtype = dtype = numpy.dtype(dtype)
+        size = 1
+        for s in shape:
+            size *= s
+        self._size = size
 
-        nbytes = self.nbytes
         if memptr is None:
-            self.data = cuda.alloc(nbytes)
+            self.data = cuda.alloc(size * dtype.itemsize)
         else:
             self.data = memptr
 
         if strides is None:
             self._strides = internal.get_contiguous_strides(
-                self._shape, self.itemsize)
-            self._flags = flags.C_CONTIGUOUS | flags.OWNDATA
-            if numpy.sum(dim != 1 for dim in shape) <= 1 or nbytes == 0:
-                self._flags |= flags.F_CONTIGUOUS
+                shape, dtype.itemsize)
+            self._c_contiguous = 1
+            self._f_contiguous = int(
+                not size or len(shape) - shape.count(1) <= 1)
         else:
             self._strides = strides
-            self._flags = flags.OWNDATA
-            self._mark_dirty()
+            self._c_contiguous = -1
+            self._f_contiguous = -1
 
         self.base = None
 
@@ -127,11 +130,12 @@ class ndarray(object):
         .. seealso:: :attr:`numpy.ndarray.flags`
 
         """
-        if self._flags & flags.C_DIRTY:
+        if self._c_contiguous == -1:
             self._update_c_contiguity()
-        if self._flags & flags.F_DIRTY:
+        if self._f_contiguous == -1:
             self._update_f_contiguity()
-        return flags.Flags(self._flags)
+        return flags.Flags(self._c_contiguous, self._f_contiguous,
+                           self.base is not None)
 
     @property
     def shape(self):
@@ -147,13 +151,13 @@ class ndarray(object):
 
     @shape.setter
     def shape(self, newshape):
-        newshape = internal.infer_unknown_dimension(newshape, self.size)
+        newshape = internal.infer_unknown_dimension(newshape, self._size)
         strides = internal.get_strides_for_nocopy_reshape(self, newshape)
         if strides is None:
             raise AttributeError('Incompatible shape')
         self._shape = newshape
         self._strides = strides
-        self._mark_f_dirty()
+        self._f_contiguous = -1
 
     @property
     def strides(self):
@@ -184,7 +188,7 @@ class ndarray(object):
         .. seealso:: :attr:`numpy.ndarray.size`
 
         """
-        return internal.prod(self._shape)
+        return self._size
 
     @property
     def itemsize(self):
@@ -204,7 +208,7 @@ class ndarray(object):
         .. seealso:: :attr:`numpy.ndarray.nbytes`
 
         """
-        return self.size * self.itemsize
+        return self._size * self.itemsize
 
     # -------------------------------------------------------------------------
     # Data type
@@ -233,15 +237,14 @@ class ndarray(object):
         if self.ndim < 2:
             return self
         else:
-            return self.transpose()
+            return transpose(self, None)
 
     __array_priority__ = 100
 
     # -------------------------------------------------------------------------
     # Array interface
     # -------------------------------------------------------------------------
-    # TODO(beam2d): Implement it
-    # __array_interface__
+    # TODO(beam2d): Implement __array_interface__
 
     # -------------------------------------------------------------------------
     # ctypes foreign function interface
@@ -259,14 +262,13 @@ class ndarray(object):
            :attr:`numpy.ndarray.ctypes`.
 
         """
-        return carray.to_carray(self.data.ptr, self.size, self._shape,
+        return carray.to_carray(self.data.ptr, self._size, self._shape,
                                 self._strides)
 
     # -------------------------------------------------------------------------
     # Array conversion
     # -------------------------------------------------------------------------
-    # TODO(beam2d): Implement it
-    # def item(self, *args):
+    # TODO(okuta): Implement item
 
     def tolist(self):
         """Converts the array to a (possibly nested) Python list.
@@ -279,10 +281,9 @@ class ndarray(object):
         """
         return self.get().tolist()
 
-    # TODO(beam2d): Implement these
-    # def itemset(self, *args):
-    # def tostring(self, order='C'):
-    # def tobytes(self, order='C'):
+    # TODO(okuta): Implement itemset
+    # TODO(okuta): Implement tostring
+    # TODO(okuta): Implement tobytes
 
     def tofile(self, fid, sep='', format='%s'):
         """Writes the array to a file.
@@ -337,8 +338,7 @@ class ndarray(object):
             elementwise.copy(self, newarray)
             return newarray
 
-    # TODO(beam2d): Implement it
-    # def byteswap(self, inplace=False):
+    # TODO(okuta): Implement byteswap
 
     def copy(self):
         """Returns a copy of the array.
@@ -368,17 +368,18 @@ class ndarray(object):
         """
         # Use __new__ instead of __init__ to skip recomputation of contiguity
         v = ndarray.__new__(ndarray)
+        v._c_contiguous = self._c_contiguous
+        v._f_contiguous = self._f_contiguous
         v._dtype = self._dtype
-        v._flags = self._flags & ~flags.OWNDATA
         v._shape = self._shape
         v._strides = self._strides
+        v._size = self._size
         v.data = self.data
         v.base = self.base if self.base is not None else self
         return v
 
-    # TODO(beam2d): Implement these
-    # def getfield(self, dtype, offset=0):
-    # def setflags(self, write=None, align=None, uic=None):
+    # TODO(okuta): Implement getfield
+    # TODO(okuta): Implement setflags
 
     def fill(self, value):
         """Fills the array with a scalar value.
@@ -403,12 +404,11 @@ class ndarray(object):
 
         """
         # TODO(beam2d): Support ordering option
-        if len(shape) == 1 and isinstance(shape[0], collections.Iterable):
-            shape = tuple(shape[0])
+        if len(shape) == 1 and isinstance(shape[0], collections.Sequence):
+            shape = shape[0]
         return reshape(self, shape)
 
-    # TODO(beam2d0: Implement it
-    # def resize(self, new_shape, refcheck=True):
+    # TODO(okuta): Implement resize
 
     def transpose(self, *axes):
         """Returns a view of the array with axes permuted.
@@ -418,6 +418,8 @@ class ndarray(object):
            :meth:`numpy.ndarray.reshape`
 
         """
+        if len(axes) == 1 and isinstance(axes[0], collections.Sequence):
+            axes = axes[0]
         return transpose(self, axes)
 
     def swapaxes(self, axis1, axis2):
@@ -448,9 +450,10 @@ class ndarray(object):
             newarray = empty_like(self)
             elementwise.copy(self, newarray)
 
-        newarray._shape = self.size,
+        newarray._shape = self._size,
         newarray._strides = self.itemsize,
-        self._flags |= flags.C_CONTIGUOUS | flags.F_CONTIGUOUS
+        newarray._c_contiguous = 1
+        newarray._f_contiguous = 1
         return newarray
 
     def ravel(self):
@@ -487,17 +490,16 @@ class ndarray(object):
         """
         return take(self, indices, axis, out)
 
-    # TODO(beam2d): Implement these
-    # def put(self, indices, values, mode='raise'):
-    # def repeat(self, repeats, axis=None):
-    # def choose(self, choices, out=None, mode='raise'):
-    # def sort(self, axis=-1, kind='quicksort', order=None):
-    # def argsort(self, axis=-1, kind='quicksort', order=None):
-    # def partition(self, kth, axis=-1, kind='introselect', order=None):
-    # def argpartition(self, kth, axis=-1, kind='introselect', order=None):
-    # def searchsorted(self, v, side='left', sorter=None):
-    # def nonzero(self):
-    # def compress(self, condition, axis=None, out=None):
+    # TODO(okuta): Implement put
+    # TODO(okuta): Implement repeat
+    # TODO(okuta): Implement choose
+    # TODO(okuta): Implement sort
+    # TODO(okuta): Implement argsort
+    # TODO(okuta): Implement partition
+    # TODO(okuta): Implement argpartition
+    # TODO(okuta): Implement searchsorted
+    # TODO(okuta): Implement nonzero
+    # TODO(okuta): Implement compress
 
     def diagonal(self, offset=0, axis1=0, axis2=1):
         """Returns a view of the specified diagonals.
@@ -556,8 +558,7 @@ class ndarray(object):
         return argmin(
             self, axis=axis, out=out, dtype=dtype, keepdims=keepdims)
 
-    # TODO(beam2d): Implement it
-    # def ptp(self, axis=None, out=None):
+    # TODO(okuta): Implement ptp
 
     def clip(self, a_min, a_max, out=None):
         """Returns an array with values limited to [a_min, a_max].
@@ -569,8 +570,7 @@ class ndarray(object):
         """
         return clip(self, a_min, a_max, out=out)
 
-    # TODO(beam2d): Implement it
-    # def round(self, decimals=0, out=None):
+    # TODO(okuta): Implement round
 
     def trace(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
         """Returns the sum along diagonals of the array.
@@ -592,8 +592,7 @@ class ndarray(object):
         """
         return sum(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims)
 
-    # TODO(beam2d): Implement it
-    # def cumsum(self, axis=None, dtype=None, out=None):
+    # TODO(okuta): Implement cumsum
 
     def mean(self, axis=None, dtype=None, out=None, keepdims=False):
         """Returns the mean along a given axis.
@@ -635,10 +634,9 @@ class ndarray(object):
         """
         return prod(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims)
 
-    # TODO(beam2d): Implement these
-    # def cumprod(self, axis=None, dtype=None, out=None):
-    # def all(self, axis=None, out=None):
-    # def any(self, axis=None, out=None):
+    # TODO(okuta): Implement cumprod
+    # TODO(okuta): Implement all
+    # TODO(okuta): Implement any
 
     # -------------------------------------------------------------------------
     # Arithmetic and comparison operations
@@ -880,8 +878,7 @@ class ndarray(object):
         else:
             return self.astype(dtype)
 
-    # TODO(beam2d): Impleent it
-    # def __array_wrap__(self, obj):
+    # TODO(okuta): Implement __array_wrap__
 
     # Container customization:
 
@@ -953,8 +950,10 @@ class ndarray(object):
         v = self.view()
         v._shape = tuple(shape)
         v._strides = tuple(strides)
+        v._size = internal.prod(shape)
         v.data = self.data + offset
-        v._mark_dirty()
+        v._c_contiguous = -1
+        v._f_contiguous = -1
 
         return v
 
@@ -972,10 +971,9 @@ class ndarray(object):
         else:
             v.fill(value)
 
-    # TODO(beam2d): Implement these
-    # def __getslice__(self, i, j):
-    # def __setslice__(self, i, j, y):
-    # def __contains__(self, y):
+    # TODO(okuta): Implement __getslice__
+    # TODO(okuta): Implement __setslice__
+    # TODO(okuta): Implement __contains__
 
     # Conversion:
 
@@ -1025,13 +1023,6 @@ class ndarray(object):
         """CUDA device on which this array resides."""
         return self.data.device
 
-    @property
-    def _fptr(self):
-        if self._dtype.type == numpy.float64:
-            return ctypes.cast(self.data.ptr, ctypes.POINTER(ctypes.c_double))
-        else:
-            return ctypes.cast(self.data.ptr, ctypes.POINTER(ctypes.c_float))
-
     def get(self, stream=None):
         """Returns a copy of the array on host memory.
 
@@ -1045,7 +1036,7 @@ class ndarray(object):
         """
         a_gpu = ascontiguousarray(self)
         a_cpu = numpy.empty(self._shape, dtype=self._dtype)
-        ptr = internal.get_ndarray_ptr(a_cpu)
+        ptr = a_cpu.ctypes.data_as(ctypes.c_void_p)
         if stream is None:
             a_gpu.data.copy_to_host(ptr, a_gpu.nbytes)
         else:
@@ -1072,7 +1063,7 @@ class ndarray(object):
             raise RuntimeError('Cannot set to non-contiguous array')
 
         arr = numpy.ascontiguousarray(arr)
-        ptr = internal.get_ndarray_ptr(arr)
+        ptr = arr.ctypes.data_as(ctypes.c_void_p)
         if stream is None:
             self.data.copy_from_host(ptr, self.nbytes)
         else:
@@ -1089,40 +1080,35 @@ class ndarray(object):
             cupy.ndarray: A view of the array with reduced dimensions.
 
         """
+        ndim = self.ndim
+        if ndim <= 1:
+            return self
+        shape, strides = internal.get_reduced_dims(
+            self._shape, self._strides, self.itemsize)
+        if ndim == len(shape):
+            return self
+
         view = self.view(dtype=dtype)
-        shape, strides = internal.get_reduced_dims_from_array(self)
         view._shape = shape
         view._strides = strides
-        view._mark_f_dirty()
+        if view._c_contiguous == 1:
+            view._f_contiguous = int(
+                not view.size or len(shape) - shape.count(1) <= 1)
+        else:
+            view._f_contiguous = -1
         return view
 
     def _update_c_contiguity(self):
-        self._flags &= ~flags.C_CONTIGUOUS
-        if internal.get_c_contiguity(self._shape, self._strides,
-                                     self.itemsize):
-            self._flags |= flags.C_CONTIGUOUS
-        self._flags &= ~flags.C_DIRTY
+        self._c_contiguous = int(internal.get_c_contiguity(
+            self._shape, self._strides, self.itemsize))
 
     def _update_f_contiguity(self):
-        self._flags &= ~flags.F_CONTIGUOUS
-        if internal.get_c_contiguity(tuple(reversed(self._shape)),
-                                     tuple(reversed(self._strides)),
-                                     self.itemsize):
-            self._flags |= flags.F_CONTIGUOUS
-        self._flags &= ~flags.F_DIRTY
+        self._f_contiguous = int(internal.get_c_contiguity(
+            self._shape[::-1], self._strides[::-1], self.itemsize))
 
     def _update_contiguity(self):
         self._update_c_contiguity()
         self._update_f_contiguity()
-
-    def _mark_c_dirty(self):
-        self._flags |= flags.C_DIRTY
-
-    def _mark_f_dirty(self):
-        self._flags |= flags.F_DIRTY
-
-    def _mark_dirty(self):
-        self._flags |= flags.C_DIRTY | flags.F_DIRTY
 
     def _should_use_rop(self, a):
         return getattr(a, '__array_priority__', 0) > self.__array_priority__

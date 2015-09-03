@@ -1,3 +1,5 @@
+.. _cupy-overview:
+
 CuPy Overview
 =============
 
@@ -12,7 +14,7 @@ The following is a brief overview of supported subset of NumPy interface:
 
 - `Basic indexing <http://docs.scipy.org/doc/numpy/reference/arrays.indexing.html>`_
   (indexing by ints, slices, newaxes, and Ellipsis)
-- Element types (dtypes): bool_, (u)int{8, 16, 32, 64}, float{16, 32, 64}
+- Element types (dtypes): bool\_, (u)int{8, 16, 32, 64}, float{16, 32, 64}
 - Most of the array creation routines
 - Reshaping and transposition
 - All operators with broadcasting
